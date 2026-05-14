@@ -7,6 +7,11 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from pycon_cal_scraper.conference import (
+    CONFERENCE_BASE_URL,
+    CONFERENCE_USER_AGENT,
+    CONFERENCE_VENUE_DEFAULT,
+)
 from pycon_cal_scraper.paths import config_file
 
 
@@ -48,6 +53,12 @@ class UserConfig(BaseModel):
         search_weight_title: Lexical search weight for title hits.
         search_weight_speaker: Lexical search weight for speaker hits.
         search_weight_abstract: Lexical search weight for abstract hits.
+        semantic_negative_threshold: Cosine similarity at/above which a
+            ``!"phrase"`` negative excludes an event.
+        venue_address: Postal address of the conference venue. Used as
+            the base of every Google Calendar event's ``location`` (with
+            the event's room prepended), so taps in Google Calendar open
+            Maps at the right building.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -59,8 +70,8 @@ class UserConfig(BaseModel):
     embedding_model: str = Field(default="voyage-3-lite")
     embedding_batch_size: int = Field(default=64, ge=1)
     voyage_api_key_env: str = Field(default="VOYAGE_API_KEY")
-    scraper_base_url: str = Field(default="https://us.pycon.org")
-    http_user_agent: str = Field(default="pycon-cal-scraper/0.1 (+https://us.pycon.org/2026/)")
+    scraper_base_url: str = Field(default=CONFERENCE_BASE_URL)
+    http_user_agent: str = Field(default=CONFERENCE_USER_AGENT)
     http_cache_ttl_hours: float = Field(default=24.0, gt=0)
     http_min_interval_seconds: float = Field(default=0.25, ge=0)
     http_concurrency: int = Field(default=5, ge=1)
@@ -68,6 +79,7 @@ class UserConfig(BaseModel):
     search_weight_speaker: int = Field(default=2, ge=0)
     search_weight_abstract: int = Field(default=1, ge=0)
     semantic_negative_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    venue_address: str = Field(default=CONFERENCE_VENUE_DEFAULT)
 
 
 def load_config(path: Path | None = None) -> UserConfig:

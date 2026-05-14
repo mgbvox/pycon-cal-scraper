@@ -19,10 +19,17 @@ from types import TracebackType
 
 import httpx
 
-DEFAULT_USER_AGENT = "pycon-cal-scraper/0.1 (+https://us.pycon.org/2026/)"
+from pycon_cal_scraper.conference import CONFERENCE_USER_AGENT
+
+DEFAULT_USER_AGENT = CONFERENCE_USER_AGENT
 DEFAULT_TTL = timedelta(hours=24)
 DEFAULT_MIN_INTERVAL = 0.25  # seconds between *live* requests
 DEFAULT_CONCURRENCY = 5
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_BACKOFF_BASE = 0.5  # seconds; doubles each retry pass
+
+#: HTTP status codes treated as transient (worth retrying with backoff).
+RETRYABLE_STATUSES: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
 
 
 def _now() -> datetime:
@@ -51,6 +58,8 @@ class CachedClient:
         concurrency: int = DEFAULT_CONCURRENCY,
         user_agent: str = DEFAULT_USER_AGENT,
         timeout: float = 30.0,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        backoff_base: float = DEFAULT_BACKOFF_BASE,
     ) -> None:
         """Build a new client.
 
@@ -63,11 +72,19 @@ class CachedClient:
             concurrency: Maximum number of in-flight live requests.
             user_agent: Value of the ``User-Agent`` header.
             timeout: Per-request timeout passed to :class:`httpx.AsyncClient`.
+            max_retries: Maximum number of *additional* attempts after the
+                first one fails with a transient error (network glitch,
+                429/5xx). ``0`` disables retry.
+            backoff_base: Base delay in seconds; each retry waits
+                ``backoff_base * 2**attempt``. With the default ``0.5``,
+                that's 0.5s, 1s, 2s — gentle on the conference server.
         """
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.ttl = ttl
         self.min_interval = min_interval
+        self.max_retries = max_retries
+        self.backoff_base = backoff_base
         self._semaphore = asyncio.Semaphore(concurrency)
         self._gate_lock = asyncio.Lock()
         self._next_allowed_at = 0.0
@@ -125,8 +142,49 @@ class CachedClient:
                 now = loop.time()
             self._next_allowed_at = now + self.min_interval
 
+    async def _fetch_once(self, url: str) -> httpx.Response:
+        """Make one live request, honoring the concurrency + throttle gates."""
+        async with self._semaphore:
+            await self._wait_throttle()
+            response = await self._client.get(url)
+        return response
+
+    async def _fetch_with_retries(self, url: str) -> httpx.Response:
+        """Fetch ``url`` live, retrying transient failures with exponential backoff.
+
+        Network errors (:class:`httpx.HTTPError` subclasses other than
+        :class:`httpx.HTTPStatusError`) are always retried. Status responses
+        in :data:`RETRYABLE_STATUSES` are retried; other non-2xx codes raise
+        immediately so 404s don't waste retry budget.
+        """
+        last_exc: BaseException | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = await self._fetch_once(url)
+            except httpx.HTTPError as exc:
+                last_exc = exc
+            else:
+                if response.status_code < 400:
+                    return response
+                if response.status_code not in RETRYABLE_STATUSES:
+                    response.raise_for_status()
+                last_exc = httpx.HTTPStatusError(
+                    f"transient HTTP {response.status_code} for {url}",
+                    request=response.request,
+                    response=response,
+                )
+            if attempt < self.max_retries:
+                await asyncio.sleep(self.backoff_base * (2**attempt))
+        # Exhausted the retry budget — propagate the most recent failure.
+        assert last_exc is not None
+        raise last_exc
+
     async def get_text(self, url: str, *, force_refresh: bool = False) -> str:
         """Fetch ``url`` as text, using the disk cache when possible.
+
+        Live requests are retried on transient errors (network exceptions
+        and 408/429/5xx responses) with exponential backoff capped at
+        :attr:`max_retries` additional attempts.
 
         Args:
             url: Absolute URL to fetch.
@@ -136,14 +194,14 @@ class CachedClient:
             The response body as text.
 
         Raises:
-            httpx.HTTPStatusError: If the response is not 2xx.
+            httpx.HTTPError: If every attempt failed (only after exhausting
+                ``max_retries``). For status errors outside the retryable
+                set (e.g. 404) the original :class:`httpx.HTTPStatusError`
+                is raised on the first try.
         """
         path = self.cache_path(url)
         if not force_refresh and self._is_fresh(path):
             return path.read_text(encoding="utf-8")
-        async with self._semaphore:
-            await self._wait_throttle()
-            response = await self._client.get(url)
-            response.raise_for_status()
+        response = await self._fetch_with_retries(url)
         path.write_text(response.text, encoding="utf-8")
         return response.text

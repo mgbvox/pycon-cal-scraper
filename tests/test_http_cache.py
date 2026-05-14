@@ -17,7 +17,14 @@ URL = "https://us.pycon.org/2026/schedule/talks/"
 
 @pytest.fixture
 def client(tmp_path: Path) -> CachedClient:
-    return CachedClient(cache_dir=tmp_path / "http", ttl=timedelta(hours=1), min_interval=0.0)
+    # Default fixture disables retries so unrelated tests stay fast — retry
+    # behaviour gets its own coverage in test_retries_on_503_then_succeeds.
+    return CachedClient(
+        cache_dir=tmp_path / "http",
+        ttl=timedelta(hours=1),
+        min_interval=0.0,
+        max_retries=0,
+    )
 
 
 @respx.mock
@@ -68,6 +75,59 @@ def test_cache_path_for_url_is_stable(tmp_path: Path) -> None:
     p2 = c.cache_path(URL)
     assert p1 == p2
     assert p1.parent == tmp_path
+
+
+@respx.mock
+async def test_retries_on_503_then_succeeds(tmp_path: Path) -> None:
+    """Two 503s followed by a 200 should resolve transparently."""
+    client = CachedClient(
+        cache_dir=tmp_path / "http",
+        ttl=timedelta(hours=1),
+        min_interval=0.0,
+        max_retries=3,
+        backoff_base=0.0,  # zero delay keeps the test snappy
+    )
+    route = respx.get(URL).mock(
+        side_effect=[
+            httpx.Response(503, text="busy"),
+            httpx.Response(503, text="busy"),
+            httpx.Response(200, text="ok"),
+        ]
+    )
+    assert await client.get_text(URL) == "ok"
+    assert route.call_count == 3
+
+
+@respx.mock
+async def test_404_raises_without_retry(tmp_path: Path) -> None:
+    """404 is not in the retryable set, so the first response should raise."""
+    client = CachedClient(
+        cache_dir=tmp_path / "http",
+        ttl=timedelta(hours=1),
+        min_interval=0.0,
+        max_retries=3,
+        backoff_base=0.0,
+    )
+    route = respx.get(URL).mock(return_value=httpx.Response(404, text="missing"))
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.get_text(URL)
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_retry_budget_exhausted_raises(tmp_path: Path) -> None:
+    """Persistent 503 should raise after the configured retry budget is spent."""
+    client = CachedClient(
+        cache_dir=tmp_path / "http",
+        ttl=timedelta(hours=1),
+        min_interval=0.0,
+        max_retries=2,
+        backoff_base=0.0,
+    )
+    route = respx.get(URL).mock(return_value=httpx.Response(503, text="busy"))
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.get_text(URL)
+    assert route.call_count == 3  # initial + 2 retries
 
 
 @respx.mock

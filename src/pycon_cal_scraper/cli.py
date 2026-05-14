@@ -15,6 +15,7 @@ import asyncio
 import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -32,14 +33,18 @@ from rich.progress import (
 from rich.table import Table
 
 from pycon_cal_scraper import paths
+from pycon_cal_scraper.conference import CONFERENCE_TZ
 from pycon_cal_scraper.config import UserConfig, load_config, save_config
 from pycon_cal_scraper.filters import (
     event_overlaps_any,
+    events_happening_at,
     filter_events_by_day,
     filter_events_by_room,
     filter_events_by_window,
+    find_conflict_groups,
     parse_day_token,
     parse_when,
+    upcoming_events,
 )
 from pycon_cal_scraper.http_cache import CachedClient
 from pycon_cal_scraper.models import Event
@@ -55,7 +60,7 @@ from pycon_cal_scraper.search import (
 from pycon_cal_scraper.store import EventsStore, SavedStore
 
 app = typer.Typer(
-    help="Scrape the PyCon US 2026 schedule, search, save, and sync to Google Calendar.",
+    help="Scrape the PyCon US schedule, search, save, and sync to Google Calendar.",
     no_args_is_help=True,
 )
 gcal_app = typer.Typer(help="Google Calendar integration.", no_args_is_help=True)
@@ -257,6 +262,17 @@ def _drifted_saved_ids(before: list[Event], after: list[Event], saved_ids: set[s
     return drifted
 
 
+def _cancelled_saved_ids(after: list[Event], saved_ids: set[str]) -> set[str]:
+    """Return saved ids that no longer appear in the freshly scraped events.
+
+    A "cancelled" event is one the user previously saved that has dropped off
+    the schedule entirely — typically because the conference removed it. The
+    caller is responsible for telling the user; this helper is purely set
+    arithmetic.
+    """
+    return saved_ids - {e.id for e in after}
+
+
 @app.command()
 def sync(
     refresh: Annotated[
@@ -273,6 +289,14 @@ def sync(
     store.save(events)
     console.print(f"[green]Cached {len(events)} events to {paths.events_file()}[/green]")
     if saved_ids:
+        cancelled = _cancelled_saved_ids(events, saved_ids)
+        if cancelled:
+            console.print(
+                f"[red]⚠ {len(cancelled)} saved event(s) no longer appear on the "
+                f"schedule (likely cancelled): {', '.join(sorted(cancelled))}.[/red] "
+                f"Use [bold]pycon-cal-scraper unsave <id>[/bold] to clean them up, "
+                f"then [bold]gcal sync --prune[/bold] to remove the calendar entries."
+            )
         drifted = _drifted_saved_ids(before, events, saved_ids)
         if drifted:
             console.print(
@@ -700,6 +724,103 @@ def unsave(
             console.print(f"[dim]not in saved-list[/dim] {eid}")
 
 
+# --- now ----------------------------------------------------------------------
+
+
+def _render_now(events: list[Event], saved_ids: set[str], at: datetime) -> None:
+    """Print the "happening now" + "next up" tables for ``at``."""
+    saved_set = [e for e in events if e.id in saved_ids]
+    now_events = events_happening_at(events, at)
+    soon = upcoming_events(events, at, limit=5)
+    pretty_at = at.strftime("%a %b %d %H:%M %Z")
+    console.print(f"[bold]As of {pretty_at}[/bold]")
+    if not now_events and not soon:
+        console.print(
+            "[yellow]No events covering this moment — the conference may not "
+            "be running, or `sync` is out of date.[/yellow]"
+        )
+        return
+    if now_events:
+        console.print("[bold cyan]Happening now[/bold cyan]")
+        console.print(_render_events_table(now_events, saved_ids=saved_ids, saved_events=saved_set))
+    else:
+        console.print("[dim]Nothing happening at this exact moment.[/dim]")
+    if soon:
+        console.print("[bold cyan]Up next[/bold cyan]")
+        console.print(_render_events_table(soon, saved_ids=saved_ids, saved_events=saved_set))
+
+
+@app.command()
+def now() -> None:
+    """Show events happening right now plus the next five up.
+
+    Uses the local time on this machine, interpreted in the conference
+    timezone. Useful day-of: ``pycon-cal-scraper now`` tells you whether to
+    walk into the room you're in front of or look for the next thing.
+    """
+    events = _events_store().load()
+    if not events:
+        console.print("[yellow]No events cached yet. Run `pycon-cal-scraper sync`.[/yellow]")
+        raise typer.Exit(code=1)
+    saved_ids = _saved_store().ids()
+    _render_now(events, saved_ids, datetime.now(tz=CONFERENCE_TZ))
+
+
+# --- export -------------------------------------------------------------------
+
+
+@app.command()
+def export(
+    output: Annotated[
+        Path,
+        typer.Argument(
+            help="Where to write the .ics file (use '-' to stream to stdout).",
+        ),
+    ],
+    all_events: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Export every scraped event instead of just the saved-list.",
+        ),
+    ] = False,
+) -> None:
+    """Export saved events (or every scraped event) as an iCalendar feed.
+
+    The output is RFC 5545 VCALENDAR text suitable for Apple Calendar,
+    Outlook, Fantastical, etc. Each VEVENT carries a stable
+    ``pycon-<id>@pycon-cal-scraper`` UID, so re-importing updates rather
+    than duplicates.
+    """
+    from pycon_cal_scraper.ical import events_to_ics
+
+    events = _events_store().load()
+    if not events:
+        console.print("[yellow]No events cached yet. Run `pycon-cal-scraper sync`.[/yellow]")
+        raise typer.Exit(code=1)
+    if all_events:
+        to_export = events
+        label = "every scraped event"
+    else:
+        to_export = _saved_store().resolve(events)
+        if not to_export:
+            console.print(
+                "[yellow]Saved-list is empty. Save some events first, or pass "
+                "[bold]--all[/bold] to export the full schedule.[/yellow]"
+            )
+            raise typer.Exit(code=1)
+        label = f"{len(to_export)} saved event(s)"
+    cfg = load_config()
+    payload = events_to_ics(to_export, venue_address=cfg.venue_address)
+    if str(output) == "-":
+        sys.stdout.write(payload)
+        return
+    target = Path(output).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(payload, encoding="utf-8")
+    console.print(f"[green]Exported {label} to {target}[/green]")
+
+
 # --- REPL ---------------------------------------------------------------------
 
 
@@ -725,11 +846,407 @@ def _warn_if_no_embedding_cache() -> bool:
 
 _REPL_HELP = (
     "[bold]Interactive search.[/bold] Type a query, or use /save <id>, /unsave <id>, "
-    "/saved, /limit <n>, /lexical, /keyword, /semantic, /room <name>, /quit. "
-    "Ctrl-D exits.\n"
+    "/saved, /conflicts, /now, /day <code>, /from <when>, /to <when>, /limit <n>, "
+    "/lexical, /keyword, /semantic, /room <name>, /quit. Ctrl-D exits.\n"
     "[dim]Query syntax: bare words = positive; !word = exclude; "
-    '!"phrase" = semantic exclude.[/dim]'
+    '!"phrase" = semantic exclude.[/dim]\n'
+    "[dim]Results/saved table: ↑/↓ move, enter toggles save, o opens URL, "
+    "? toggles abstract, esc or q exits.[/dim]\n"
+    "[dim]/conflicts: ↑/↓ row, ←/→ group, enter toggles save, esc or q exits.[/dim]"
 )
+
+
+def _picker_active() -> bool:
+    """Return ``True`` iff the REPL should use the interactive arrow-key picker.
+
+    Gated on stdin being a real terminal so that CliRunner-based tests (and
+    other piped inputs) fall back to the static rich-table renderer.
+    """
+    return sys.stdin.isatty()
+
+
+def _truncate(text: str, width: int) -> str:
+    """Truncate ``text`` to ``width`` columns, padding with spaces if shorter."""
+    if len(text) > width:
+        return text[: max(0, width - 1)] + "…"
+    return f"{text:<{width}}"
+
+
+def _picker_header(*, has_scores: bool, has_matches: bool, title_w: int, speakers_w: int) -> str:
+    """Build the static header line for the interactive picker."""
+    parts = ["  ", "★", "⚠", f"{'ID':<8}"]
+    if has_scores:
+        parts.append(f"{'Score':>6}")
+    if has_matches:
+        parts.append(f"{'Where':<5}")
+    parts.append(f"{'When':<14}")
+    parts.append(f"{'Type':<10}")
+    parts.append(_truncate("Title", title_w))
+    parts.append(_truncate("Speakers", speakers_w))
+    parts.append("Room")
+    return "  ".join(parts)
+
+
+def _picker_row(
+    event: Event,
+    *,
+    is_cursor: bool,
+    saved_ids: set[str],
+    saved_events: list[Event],
+    scores: dict[str, float] | None,
+    matches: dict[str, frozenset[str]] | None,
+    title_w: int,
+    speakers_w: int,
+) -> str:
+    """Render one event as a fixed-width text row for the picker."""
+    cursor_mark = "▶ " if is_cursor else "  "
+    star = "★" if event.id in saved_ids else " "
+    conflict = "⚠" if event.id not in saved_ids and event_overlaps_any(event, saved_events) else " "
+    parts = [cursor_mark, star, conflict, f"{event.id:<8}"]
+    if scores is not None:
+        parts.append(f"{scores.get(event.id, 0.0):>6.3f}")
+    if matches is not None:
+        parts.append(f"{_format_match_fields(matches.get(event.id, frozenset())):<5}")
+    parts.append(f"{_format_dt(event):<14}")
+    parts.append(f"{event.type.value:<10}")
+    parts.append(_truncate(event.title, title_w))
+    parts.append(_truncate(", ".join(event.speakers), speakers_w))
+    parts.append(event.room or "")
+    return "  ".join(parts)
+
+
+def _open_url(url: str) -> bool:
+    """Open ``url`` in the user's default browser via :mod:`webbrowser`.
+
+    Returns:
+        ``True`` if the browser module reported success, ``False`` otherwise.
+        Isolated as a helper so tests can monkeypatch the side effect.
+    """
+    import webbrowser
+
+    try:
+        return webbrowser.open(url)
+    except Exception:  # pragma: no cover — webbrowser failures are platform-dependent
+        return False
+
+
+def _run_event_picker(
+    rows: list[Event],
+    *,
+    saved_store: SavedStore,
+    all_events: list[Event],
+    scores: dict[str, float] | None = None,
+    matches: dict[str, frozenset[str]] | None = None,
+) -> None:
+    """Open an arrow-key-navigable picker over ``rows``.
+
+    Up/Down moves the cursor (wraps at the ends). Enter toggles the saved
+    state for the highlighted event. ``?`` toggles an inline abstract panel
+    for the cursor row; ``o`` opens that row's URL in the system browser.
+    Esc or ``q`` returns control to the REPL prompt. The cursor row is
+    rendered in reverse video; ★ and ⚠ markers update on every keypress
+    to reflect freshly toggled saves.
+    """
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.formatted_text import FormattedText
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.layout.containers import HSplit, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.styles import Style
+
+    if not rows:
+        return
+
+    title_w = 40
+    speakers_w = 25
+    cursor = [0]
+    show_abstract = [False]
+    status = [""]
+
+    def _abstract_block(event: Event) -> list[tuple[str, str]]:
+        body = event.description or event.abstract or "(no abstract available)"
+        return [
+            ("class:abstract-title", f"\n{event.title}\n"),
+            ("class:abstract", f"{body}\n"),
+            ("class:abstract", f"{event.url}\n"),
+        ]
+
+    def get_content() -> FormattedText:
+        saved_ids = saved_store.ids()
+        saved_events = saved_store.resolve(all_events)
+        lines: list[tuple[str, str]] = [
+            (
+                "class:header",
+                _picker_header(
+                    has_scores=scores is not None,
+                    has_matches=matches is not None,
+                    title_w=title_w,
+                    speakers_w=speakers_w,
+                )
+                + "\n",
+            )
+        ]
+        for i, event in enumerate(rows):
+            text = _picker_row(
+                event,
+                is_cursor=(i == cursor[0]),
+                saved_ids=saved_ids,
+                saved_events=saved_events,
+                scores=scores,
+                matches=matches,
+                title_w=title_w,
+                speakers_w=speakers_w,
+            )
+            style = "class:cursor" if i == cursor[0] else ""
+            lines.append((style, text + "\n"))
+        if show_abstract[0]:
+            lines.extend(_abstract_block(rows[cursor[0]]))
+        if status[0]:
+            lines.append(("class:status", f"{status[0]}\n"))
+        lines.append(
+            (
+                "class:hint",
+                "[↑/↓ move • enter toggle save • ? abstract • o open URL • esc/q exit]\n",
+            )
+        )
+        return FormattedText(lines)
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    def _up(event: Any) -> None:
+        cursor[0] = (cursor[0] - 1) % len(rows)
+        status[0] = ""
+
+    @kb.add("down")
+    def _down(event: Any) -> None:
+        cursor[0] = (cursor[0] + 1) % len(rows)
+        status[0] = ""
+
+    @kb.add("enter")
+    def _toggle(event: Any) -> None:
+        target = rows[cursor[0]]
+        if target.id in saved_store.ids():
+            saved_store.remove(target.id)
+        else:
+            saved_store.add(target.id)
+
+    @kb.add("?")
+    def _toggle_abstract(event: Any) -> None:
+        show_abstract[0] = not show_abstract[0]
+
+    @kb.add("o")
+    def _open(event: Any) -> None:
+        target = rows[cursor[0]]
+        opened = _open_url(str(target.url))
+        status[0] = f"opened {target.url}" if opened else f"could not open {target.url}"
+
+    @kb.add("escape")
+    @kb.add("q")
+    @kb.add("c-c")
+    @kb.add("c-d")
+    def _exit(event: Any) -> None:
+        event.app.exit()
+
+    style = Style.from_dict(
+        {
+            "cursor": "reverse",
+            "header": "bold",
+            "hint": "italic ansibrightblack",
+            "abstract-title": "bold",
+            "abstract": "",
+            "status": "italic ansiyellow",
+        }
+    )
+    layout = Layout(HSplit([Window(content=FormattedTextControl(get_content))]))
+    app: Application[None] = Application(
+        layout=layout,
+        key_bindings=kb,
+        full_screen=False,
+        style=style,
+        mouse_support=False,
+    )
+    app.run()
+
+
+def _run_conflicts_picker(
+    groups: list[list[Event]],
+    *,
+    saved_store: SavedStore,
+    all_events: list[Event],
+) -> None:
+    """Open an arrow-key picker showing one conflict group at a time.
+
+    A banner-style header announces the current position
+    (``═══ Conflict 2 of 3 — 4 events ═══``) so users always see how many
+    groups exist. Up/Down moves the row cursor inside the current group.
+    With more than one group, Left/Right cycle to the previous/next group
+    (wrapping at the ends) and reset the row cursor; with a single group,
+    the ``←/→`` hint is suppressed so the UI doesn't promise navigation
+    that wouldn't visibly do anything. Enter toggles the saved state of
+    the highlighted event, ``?`` shows the abstract, ``o`` opens the URL,
+    Esc/``q`` exits.
+
+    Group composition is captured at the moment ``/conflicts`` is invoked:
+    toggling saves updates ★ markers live but doesn't restructure the
+    clusters — re-run ``/conflicts`` to see the new layout.
+    """
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.formatted_text import FormattedText
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout
+    from prompt_toolkit.layout.containers import HSplit, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.styles import Style
+
+    if not groups:
+        return
+
+    title_w = 40
+    speakers_w = 25
+    group_idx = [0]
+    row_idx = [0]
+    show_abstract = [False]
+    status = [""]
+    multi_group = len(groups) > 1
+
+    def _abstract_block(event: Event) -> list[tuple[str, str]]:
+        body = event.description or event.abstract or "(no abstract available)"
+        return [
+            ("class:abstract-title", f"\n{event.title}\n"),
+            ("class:abstract", f"{body}\n"),
+            ("class:abstract", f"{event.url}\n"),
+        ]
+
+    def _banner() -> str:
+        if multi_group:
+            label = (
+                f"Conflict {group_idx[0] + 1} of {len(groups)} — {len(groups[group_idx[0]])} events"
+            )
+        else:
+            label = f"Only conflict — {len(groups[0])} events"
+        rule = "═" * 3
+        return f"{rule} {label} {rule}\n"
+
+    def _hint() -> str:
+        nav = "↑/↓ row" + (" • ←/→ group" if multi_group else "")
+        return f"[{nav} • enter toggle save • ? abstract • o open URL • esc/q exit]\n"
+
+    def get_content() -> FormattedText:
+        group = groups[group_idx[0]]
+        saved_ids = saved_store.ids()
+        saved_events = saved_store.resolve(all_events)
+        lines: list[tuple[str, str]] = [
+            ("class:title", _banner()),
+            (
+                "class:header",
+                _picker_header(
+                    has_scores=False,
+                    has_matches=False,
+                    title_w=title_w,
+                    speakers_w=speakers_w,
+                )
+                + "\n",
+            ),
+        ]
+        for i, event in enumerate(group):
+            text = _picker_row(
+                event,
+                is_cursor=(i == row_idx[0]),
+                saved_ids=saved_ids,
+                saved_events=saved_events,
+                scores=None,
+                matches=None,
+                title_w=title_w,
+                speakers_w=speakers_w,
+            )
+            style = "class:cursor" if i == row_idx[0] else ""
+            lines.append((style, text + "\n"))
+        if show_abstract[0]:
+            lines.extend(_abstract_block(group[row_idx[0]]))
+        if status[0]:
+            lines.append(("class:status", f"{status[0]}\n"))
+        lines.append(("class:hint", _hint()))
+        return FormattedText(lines)
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    def _up(event: Any) -> None:
+        row_idx[0] = (row_idx[0] - 1) % len(groups[group_idx[0]])
+        status[0] = ""
+
+    @kb.add("down")
+    def _down(event: Any) -> None:
+        row_idx[0] = (row_idx[0] + 1) % len(groups[group_idx[0]])
+        status[0] = ""
+
+    @kb.add("left")
+    def _prev_group(event: Any) -> None:
+        if not multi_group:
+            status[0] = "only one conflict group"
+            return
+        group_idx[0] = (group_idx[0] - 1) % len(groups)
+        row_idx[0] = 0
+        show_abstract[0] = False
+        status[0] = ""
+
+    @kb.add("right")
+    def _next_group(event: Any) -> None:
+        if not multi_group:
+            status[0] = "only one conflict group"
+            return
+        group_idx[0] = (group_idx[0] + 1) % len(groups)
+        row_idx[0] = 0
+        show_abstract[0] = False
+        status[0] = ""
+
+    @kb.add("enter")
+    def _toggle(event: Any) -> None:
+        target = groups[group_idx[0]][row_idx[0]]
+        if target.id in saved_store.ids():
+            saved_store.remove(target.id)
+        else:
+            saved_store.add(target.id)
+
+    @kb.add("?")
+    def _toggle_abstract(event: Any) -> None:
+        show_abstract[0] = not show_abstract[0]
+
+    @kb.add("o")
+    def _open(event: Any) -> None:
+        target = groups[group_idx[0]][row_idx[0]]
+        opened = _open_url(str(target.url))
+        status[0] = f"opened {target.url}" if opened else f"could not open {target.url}"
+
+    @kb.add("escape")
+    @kb.add("q")
+    @kb.add("c-c")
+    @kb.add("c-d")
+    def _exit(event: Any) -> None:
+        event.app.exit()
+
+    style = Style.from_dict(
+        {
+            "cursor": "reverse",
+            "header": "bold",
+            "title": "bold ansired",
+            "hint": "italic ansibrightblack",
+            "abstract-title": "bold",
+            "abstract": "",
+            "status": "italic ansiyellow",
+        }
+    )
+    layout = Layout(HSplit([Window(content=FormattedTextControl(get_content))]))
+    app: Application[None] = Application(
+        layout=layout,
+        key_bindings=kb,
+        full_screen=False,
+        style=style,
+        mouse_support=False,
+    )
+    app.run()
 
 
 def _run_repl(
@@ -756,11 +1273,18 @@ def _run_repl(
 
     saved_store = _saved_store()
     session: PromptSession[str] = PromptSession(history=InMemoryHistory())
+    day: str | None = None
+    from_ts: str | None = None
+    to_ts: str | None = None
     console.print(_REPL_HELP)
-    console.print(
-        f"[dim]showing up to {results_limit} matches per query (mode: {mode}, "
-        f"room: {room or 'any'})[/dim]"
-    )
+
+    def _print_filter_state() -> None:
+        console.print(
+            f"[dim]filters: mode={mode}, room={room or 'any'}, day={day or 'any'}, "
+            f"from={from_ts or '—'}, to={to_ts or '—'}, limit={results_limit}[/dim]"
+        )
+
+    _print_filter_state()
     # Always surface embedding-cache state at REPL start so the user
     # knows whether /semantic will work before they try it.
     has_cache = _warn_if_no_embedding_cache()
@@ -779,13 +1303,35 @@ def _run_repl(
             return
         if line == "/saved":
             saved_resolved = saved_store.resolve(events)
-            console.print(
-                _render_events_table(
-                    saved_resolved,
-                    saved_ids=saved_store.ids(),
-                    saved_events=saved_resolved,
+            if _picker_active() and saved_resolved:
+                _run_event_picker(saved_resolved, saved_store=saved_store, all_events=events)
+            else:
+                console.print(
+                    _render_events_table(
+                        saved_resolved,
+                        saved_ids=saved_store.ids(),
+                        saved_events=saved_resolved,
+                    )
                 )
-            )
+            continue
+        if line == "/conflicts":
+            saved_resolved = saved_store.resolve(events)
+            groups = find_conflict_groups(saved_resolved)
+            if not groups:
+                console.print("[green]No conflicts in your saved list.[/green]")
+                continue
+            if _picker_active():
+                _run_conflicts_picker(groups, saved_store=saved_store, all_events=events)
+            else:
+                for n, group in enumerate(groups, start=1):
+                    console.print(f"[bold red]Conflict {n} ({len(group)} events):[/bold red]")
+                    console.print(
+                        _render_events_table(
+                            group,
+                            saved_ids=saved_store.ids(),
+                            saved_events=saved_resolved,
+                        )
+                    )
             continue
         if line == "/limit" or line.startswith("/limit "):
             parts = line.split(maxsplit=1)
@@ -812,6 +1358,48 @@ def _run_repl(
             room = parts[1].strip() if len(parts) == 2 else None
             console.print(f"[dim]room filter: {room or 'any'}[/dim]")
             continue
+        if line == "/day" or line.startswith("/day "):
+            parts = line.split(maxsplit=1)
+            new_day = parts[1].strip() if len(parts) == 2 else None
+            if new_day:
+                try:
+                    parse_day_token(new_day)
+                except ValueError as exc:
+                    console.print(f"[yellow]usage: /day <mon|tue|...|YYYY-MM-DD> ({exc})[/yellow]")
+                    continue
+            day = new_day
+            console.print(f"[dim]day filter: {day or 'any'}[/dim]")
+            continue
+        if line == "/from" or line.startswith("/from "):
+            parts = line.split(maxsplit=1)
+            new_from = parts[1].strip() if len(parts) == 2 else None
+            if new_from:
+                try:
+                    parse_when(new_from)
+                except ValueError as exc:
+                    console.print(f"[yellow]usage: /from <YYYY-MM-DDTHH:MM> ({exc})[/yellow]")
+                    continue
+            from_ts = new_from
+            console.print(f"[dim]from: {from_ts or '—'}[/dim]")
+            continue
+        if line == "/to" or line.startswith("/to "):
+            parts = line.split(maxsplit=1)
+            new_to = parts[1].strip() if len(parts) == 2 else None
+            if new_to:
+                try:
+                    parse_when(new_to)
+                except ValueError as exc:
+                    console.print(f"[yellow]usage: /to <YYYY-MM-DDTHH:MM> ({exc})[/yellow]")
+                    continue
+            to_ts = new_to
+            console.print(f"[dim]to: {to_ts or '—'}[/dim]")
+            continue
+        if line == "/now":
+            _render_now(events, saved_store.ids(), datetime.now(tz=CONFERENCE_TZ))
+            continue
+        if line == "/filters":
+            _print_filter_state()
+            continue
         if line.startswith("/save "):
             for eid in line.split()[1:]:
                 if saved_store.add(eid):
@@ -823,7 +1411,13 @@ def _run_repl(
                     console.print(f"[green]removed[/green] {eid}")
             continue
         parsed = parse_query(line)
-        candidates = filter_events_by_room(events, room) if room else list(events)
+        try:
+            candidates = _apply_time_filters(events, day=day, from_=from_ts, to=to_ts)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            continue
+        if room:
+            candidates = filter_events_by_room(candidates, room)
         matches, score_map, match_map = _execute_search(
             candidates, parsed, mode=mode, limit=results_limit
         )
@@ -833,15 +1427,24 @@ def _run_repl(
         if not matches:
             console.print("[yellow]no matches[/yellow]")
             continue
-        console.print(
-            _render_events_table(
+        if _picker_active():
+            _run_event_picker(
                 matches,
-                saved_ids=saved_store.ids(),
-                saved_events=saved_store.resolve(events),
+                saved_store=saved_store,
+                all_events=events,
                 scores=score_map,
                 matches=match_map,
             )
-        )
+        else:
+            console.print(
+                _render_events_table(
+                    matches,
+                    saved_ids=saved_store.ids(),
+                    saved_events=saved_store.resolve(events),
+                    scores=score_map,
+                    matches=match_map,
+                )
+            )
 
 
 # --- gcal ---------------------------------------------------------------------
@@ -879,6 +1482,14 @@ def gcal_sync(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Print the plan without changing anything.")
     ] = False,
+    retries: Annotated[
+        int,
+        typer.Option(
+            "--retries",
+            help="Retry passes for sub-requests that fail inside a batch (default 3).",
+            min=0,
+        ),
+    ] = 3,
 ) -> None:
     """Push the saved-list to the configured Google Calendar."""
     from pycon_cal_scraper.gcal import auth as gauth
@@ -927,20 +1538,51 @@ def gcal_sync(
             )
             progress.update(list_task, total=1, completed=1)
         console.print(f"[dim]Read {len(existing)} managed event(s) from calendar.[/dim]")
-        plan = gsync.diff(saved, existing, prune=prune)
+        plan = gsync.diff(saved, existing, prune=prune, venue_address=cfg.venue_address)
         console.print(f"[bold]Plan:[/bold] {plan.summary()}")
         if dry_run or plan.is_empty():
             return
         with _progress() as progress:
             apply_task: TaskID | None = None
 
-            def on_apply(action: str, completed: int, total: int) -> None:
+            def _ensure_task(total: int) -> TaskID:
                 nonlocal apply_task
                 if apply_task is None:
-                    apply_task = progress.add_task("[cyan]Syncing events  [/cyan]", total=total)
-                progress.update(apply_task, completed=completed, total=total)
+                    apply_task = progress.add_task("[cyan]Syncing events[/cyan]", total=total)
+                return apply_task
 
-            await gsync.apply(service, plan, calendar_id=calendar_id, on_progress=on_apply)
+            def on_apply(action: str, completed: int, total: int) -> None:
+                progress.update(_ensure_task(total), completed=completed, total=total)
+
+            def on_batch(batch_idx: int, batches_in_round: int, retry_pass: int) -> None:
+                if retry_pass == 0:
+                    desc = f"[cyan]Syncing events[/cyan] (batch {batch_idx + 1}/{batches_in_round})"
+                else:
+                    desc = (
+                        f"[cyan]Syncing events[/cyan] "
+                        f"(retry {retry_pass}/{retries} • "
+                        f"batch {batch_idx + 1}/{batches_in_round})"
+                    )
+                progress.update(_ensure_task(plan.total_actions()), description=desc)
+
+            try:
+                await gsync.apply(
+                    service,
+                    plan,
+                    calendar_id=calendar_id,
+                    on_progress=on_apply,
+                    on_batch=on_batch,
+                    venue_address=cfg.venue_address,
+                    retries=retries,
+                )
+            except ExceptionGroup as eg:
+                console.print(
+                    f"[red]Sync finished with {len(eg.exceptions)} failure(s) "
+                    f"after {retries} retries:[/red]"
+                )
+                for exc in eg.exceptions:
+                    console.print(f"  [red]•[/red] {exc!r}")
+                raise typer.Exit(code=1) from eg
         console.print("[green]Sync complete.[/green]")
 
     asyncio.run(_run())
@@ -1032,7 +1674,13 @@ def gcal_clean(
                     apply_task = progress.add_task("[cyan]Deleting events[/cyan]", total=total)
                 progress.update(apply_task, completed=completed, total=total)
 
-            await gsync.apply(service, plan, calendar_id=calendar_id, on_progress=on_apply)
+            try:
+                await gsync.apply(service, plan, calendar_id=calendar_id, on_progress=on_apply)
+            except ExceptionGroup as eg:
+                console.print(f"[red]Clean finished with {len(eg.exceptions)} failure(s):[/red]")
+                for exc in eg.exceptions:
+                    console.print(f"  [red]•[/red] {exc!r}")
+                raise typer.Exit(code=1) from eg
 
     asyncio.run(_run_delete())
     console.print(f"[green]Removed {len(managed)} event(s).[/green]")

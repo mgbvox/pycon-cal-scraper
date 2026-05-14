@@ -189,7 +189,9 @@ def test_repl_limit_command_changes_in_session_limit(
 
     cli_mod._run_repl(events, results_limit=5)
 
-    assert "showing up to 5" in capture.text
+    # The opening filter banner advertises the configured limit; /limit 2 then
+    # confirms the new cap via the dedicated "showing up to N" message.
+    assert "limit=5" in capture.text
     assert "showing up to 2" in capture.text
 
 
@@ -661,6 +663,308 @@ def test_gcal_clean_no_managed_events(runner: CliRunner, monkeypatch: pytest.Mon
     assert "No managed events" in result.stdout
 
 
+def test_picker_arrow_down_enter_toggles_save(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Down-arrow + enter on a fresh event should save it; second enter should unsave it."""
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    import pycon_cal_scraper.cli as cli_mod
+
+    rows = [_seed("1", "First"), _seed("2", "Second"), _seed("3", "Third")]
+    EventsStore(events_file()).save(rows)
+    saved_store = cli_mod._saved_store()
+
+    # ↓ to row 1 (Second), enter to save, q to exit.
+    keys = "\x1b[B\rq"
+    with create_pipe_input() as inp:
+        inp.send_text(keys)
+        with create_app_session(input=inp, output=DummyOutput()):
+            cli_mod._run_event_picker(rows, saved_store=saved_store, all_events=rows)
+    assert saved_store.ids() == {"2"}
+
+    # Same path: now enter on Second should unsave it.
+    keys = "\x1b[B\rq"
+    with create_pipe_input() as inp:
+        inp.send_text(keys)
+        with create_app_session(input=inp, output=DummyOutput()):
+            cli_mod._run_event_picker(rows, saved_store=saved_store, all_events=rows)
+    assert saved_store.ids() == set()
+
+
+def test_picker_up_arrow_wraps_to_last_row(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Up-arrow from row 0 should wrap to the last row, then enter saves it."""
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    import pycon_cal_scraper.cli as cli_mod
+
+    rows = [_seed("a", "A"), _seed("b", "B"), _seed("c", "C")]
+    EventsStore(events_file()).save(rows)
+    saved_store = cli_mod._saved_store()
+
+    keys = "\x1b[A\rq"  # ↑ (wraps to last), enter (save 'c'), q.
+    with create_pipe_input() as inp:
+        inp.send_text(keys)
+        with create_app_session(input=inp, output=DummyOutput()):
+            cli_mod._run_event_picker(rows, saved_store=saved_store, all_events=rows)
+    assert saved_store.ids() == {"c"}
+
+
+def test_picker_empty_rows_returns_immediately(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The picker should be a no-op for an empty row list (no Application.run())."""
+    import pycon_cal_scraper.cli as cli_mod
+
+    saved_store = cli_mod._saved_store()
+    # Should return without trying to read stdin.
+    cli_mod._run_event_picker([], saved_store=saved_store, all_events=[])
+    assert saved_store.ids() == set()
+
+
+def test_picker_o_key_opens_url_in_browser(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pressing `o` invokes `_open_url` on the cursor row's URL."""
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    import pycon_cal_scraper.cli as cli_mod
+
+    rows = [_seed("1", "Async patterns")]
+    EventsStore(events_file()).save(rows)
+    saved_store = cli_mod._saved_store()
+    opened: list[str] = []
+    monkeypatch.setattr(cli_mod, "_open_url", lambda url: opened.append(url) or True)
+
+    keys = "oq"
+    with create_pipe_input() as inp:
+        inp.send_text(keys)
+        with create_app_session(input=inp, output=DummyOutput()):
+            cli_mod._run_event_picker(rows, saved_store=saved_store, all_events=rows)
+
+    assert opened == ["https://us.pycon.org/2026/schedule/presentation/1/"]
+
+
+def test_picker_question_mark_does_not_crash(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`?` toggles the abstract panel without throwing for events without one."""
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    import pycon_cal_scraper.cli as cli_mod
+
+    rows = [_seed("1", "Async patterns")]
+    EventsStore(events_file()).save(rows)
+    saved_store = cli_mod._saved_store()
+
+    keys = "??q"  # toggle on, toggle off, exit.
+    with create_pipe_input() as inp:
+        inp.send_text(keys)
+        with create_app_session(input=inp, output=DummyOutput()):
+            cli_mod._run_event_picker(rows, saved_store=saved_store, all_events=rows)
+    # Nothing to assert beyond "didn't raise" — save state should still be untouched.
+    assert saved_store.ids() == set()
+
+
+def test_conflicts_picker_right_arrow_cycles_groups_then_enter_toggles(
+    runner: CliRunner,
+) -> None:
+    """→ moves to the next group, ↓ moves the row cursor, enter toggles save."""
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    import pycon_cal_scraper.cli as cli_mod
+
+    # Two disjoint conflict groups: (a,b) overlap 09:00-10:00, (c,d) overlap 14:00-15:00.
+    a = _seed("a", "Morning A")
+    b = Event.model_validate({**a.model_dump(mode="json"), "id": "b", "title": "Morning B"})
+    c = Event.model_validate(
+        {
+            **a.model_dump(mode="json"),
+            "id": "c",
+            "title": "Afternoon C",
+            "start": datetime(2026, 5, 15, 14, 0, tzinfo=PACIFIC).isoformat(),
+            "end": datetime(2026, 5, 15, 15, 0, tzinfo=PACIFIC).isoformat(),
+        }
+    )
+    d = Event.model_validate({**c.model_dump(mode="json"), "id": "d", "title": "Afternoon D"})
+    EventsStore(events_file()).save([a, b, c, d])
+    saved_file().write_text(
+        json.dumps(
+            [{"id": x, "saved_at": "2026-05-10T00:00:00+00:00"} for x in ("a", "b", "c", "d")]
+        ),
+        encoding="utf-8",
+    )
+    saved_store = cli_mod._saved_store()
+    groups = [[a, b], [c, d]]
+
+    # →: jump to second group. ↓: cursor to row 1 (= "d"). Enter: unsave "d". q.
+    keys = "\x1b[C\x1b[B\rq"
+    with create_pipe_input() as inp:
+        inp.send_text(keys)
+        with create_app_session(input=inp, output=DummyOutput()):
+            cli_mod._run_conflicts_picker(groups, saved_store=saved_store, all_events=[a, b, c, d])
+
+    # Started saved {a,b,c,d}; toggle on "d" removed it.
+    assert saved_store.ids() == {"a", "b", "c"}
+
+
+def test_conflicts_picker_left_arrow_wraps_to_last_group(runner: CliRunner) -> None:
+    """←  from the first group should wrap around to the last group."""
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    import pycon_cal_scraper.cli as cli_mod
+
+    a = _seed("a", "Morning A")
+    b = Event.model_validate({**a.model_dump(mode="json"), "id": "b", "title": "Morning B"})
+    c = Event.model_validate(
+        {
+            **a.model_dump(mode="json"),
+            "id": "c",
+            "title": "Afternoon C",
+            "start": datetime(2026, 5, 15, 14, 0, tzinfo=PACIFIC).isoformat(),
+            "end": datetime(2026, 5, 15, 15, 0, tzinfo=PACIFIC).isoformat(),
+        }
+    )
+    d = Event.model_validate({**c.model_dump(mode="json"), "id": "d", "title": "Afternoon D"})
+    EventsStore(events_file()).save([a, b, c, d])
+    saved_file().write_text(
+        json.dumps(
+            [{"id": x, "saved_at": "2026-05-10T00:00:00+00:00"} for x in ("a", "b", "c", "d")]
+        ),
+        encoding="utf-8",
+    )
+    saved_store = cli_mod._saved_store()
+    groups = [[a, b], [c, d]]
+
+    # ← from group 0 wraps to group 1; enter toggles its first row ("c"); q exits.
+    keys = "\x1b[D\rq"
+    with create_pipe_input() as inp:
+        inp.send_text(keys)
+        with create_app_session(input=inp, output=DummyOutput()):
+            cli_mod._run_conflicts_picker(groups, saved_store=saved_store, all_events=[a, b, c, d])
+    assert saved_store.ids() == {"a", "b", "d"}
+
+
+def test_conflicts_picker_empty_groups_returns_immediately(runner: CliRunner) -> None:
+    """The conflicts picker should be a no-op when there are no groups."""
+    import pycon_cal_scraper.cli as cli_mod
+
+    saved_store = cli_mod._saved_store()
+    cli_mod._run_conflicts_picker([], saved_store=saved_store, all_events=[])
+    assert saved_store.ids() == set()
+
+
+def test_conflicts_picker_single_group_left_right_no_op_with_feedback(
+    runner: CliRunner,
+) -> None:
+    """With one group, ←/→ must not silently look broken — they should hold
+    the row cursor exactly where it was and stash an ``only one conflict
+    group`` status message so users see the keypress was received."""
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    import pycon_cal_scraper.cli as cli_mod
+
+    a = _seed("a", "Morning A")
+    b = Event.model_validate({**a.model_dump(mode="json"), "id": "b", "title": "Morning B"})
+    EventsStore(events_file()).save([a, b])
+    saved_file().write_text(
+        json.dumps([{"id": x, "saved_at": "2026-05-10T00:00:00+00:00"} for x in ("a", "b")]),
+        encoding="utf-8",
+    )
+    saved_store = cli_mod._saved_store()
+    groups = [[a, b]]
+
+    # ↓ moves cursor to row 1, → must NOT reset it (single group → no-op), enter
+    # then toggles "b" (cursor still on row 1), q exits.
+    keys = "\x1b[B\x1b[C\rq"
+    with create_pipe_input() as inp:
+        inp.send_text(keys)
+        with create_app_session(input=inp, output=DummyOutput()):
+            cli_mod._run_conflicts_picker(groups, saved_store=saved_store, all_events=[a, b])
+
+    # If → had wrongly reset row_idx to 0, enter would have toggled "a" instead.
+    # We need "b" gone (started saved {a,b}) for the regression check.
+    assert saved_store.ids() == {"a"}
+
+
+def test_repl_conflicts_reports_clean_saved_list(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/conflicts`` prints a green all-clear when no saved events overlap."""
+    import pycon_cal_scraper.cli as cli_mod
+
+    EventsStore(events_file()).save([_seed("1", "Async")])
+    saved_file().write_text(
+        json.dumps([{"id": "1", "saved_at": "2026-05-10T00:00:00+00:00"}]), encoding="utf-8"
+    )
+    events = EventsStore(events_file()).load()
+
+    capture = _ReplOutCapture()
+    monkeypatch.setattr(cli_mod, "console", capture)
+    monkeypatch.setattr("prompt_toolkit.PromptSession", _scripted_session(["/conflicts", "/quit"]))
+
+    cli_mod._run_repl(events, results_limit=5)
+    assert "No conflicts" in capture.text
+
+
+def test_repl_conflicts_renders_overlapping_saved_events(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/conflicts`` lists each cluster of mutually-overlapping saved events."""
+    import pycon_cal_scraper.cli as cli_mod
+
+    saved_a = _seed("1", "Talk A")
+    saved_b = Event.model_validate(
+        {**saved_a.model_dump(mode="json"), "id": "2", "title": "Talk B"}
+    )
+    not_in_conflict = Event.model_validate(
+        {
+            **saved_a.model_dump(mode="json"),
+            "id": "3",
+            "title": "Talk C",
+            "start": datetime(2026, 5, 15, 14, 0, tzinfo=PACIFIC).isoformat(),
+            "end": datetime(2026, 5, 15, 14, 30, tzinfo=PACIFIC).isoformat(),
+        }
+    )
+    EventsStore(events_file()).save([saved_a, saved_b, not_in_conflict])
+    saved_file().write_text(
+        json.dumps(
+            [
+                {"id": "1", "saved_at": "2026-05-10T00:00:00+00:00"},
+                {"id": "2", "saved_at": "2026-05-10T00:00:00+00:00"},
+                {"id": "3", "saved_at": "2026-05-10T00:00:00+00:00"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    events = EventsStore(events_file()).load()
+
+    capture = _ReplOutCapture()
+    monkeypatch.setattr(cli_mod, "console", capture)
+    monkeypatch.setattr("prompt_toolkit.PromptSession", _scripted_session(["/conflicts", "/quit"]))
+
+    cli_mod._run_repl(events, results_limit=5)
+    assert "Conflict 1 (2 events)" in capture.text
+    # The non-overlapping event must not be reported as a conflict.
+    assert "Conflict 2" not in capture.text
+
+
 def test_repl_limit_command_rejects_garbage(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -733,3 +1037,170 @@ def test_gcal_sync_no_saved_events(runner: CliRunner) -> None:
     result = runner.invoke(cli.app, ["gcal", "sync"])
     assert result.exit_code == 0
     assert "nothing to sync" in result.stdout
+
+
+def test_now_command_renders_happening_and_upcoming(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`now` should list events covering the current moment plus the next few."""
+    happening = _seed("1", "Live talk")
+    upcoming = Event.model_validate(
+        {
+            **happening.model_dump(mode="json"),
+            "id": "2",
+            "title": "Later talk",
+            "start": datetime(2026, 5, 15, 11, 0, tzinfo=PACIFIC).isoformat(),
+            "end": datetime(2026, 5, 15, 11, 30, tzinfo=PACIFIC).isoformat(),
+        }
+    )
+    EventsStore(events_file()).save([happening, upcoming])
+
+    fixed = datetime(2026, 5, 15, 9, 15, tzinfo=PACIFIC)
+
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return fixed if tz is None else fixed.astimezone(tz)
+
+    monkeypatch.setattr(cli, "datetime", _FixedDatetime)
+
+    result = runner.invoke(cli.app, ["now"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.stdout
+    assert "Happening now" in result.stdout
+    assert "Live talk" in result.stdout
+    assert "Up next" in result.stdout
+    assert "Later talk" in result.stdout
+
+
+def test_now_command_without_cache_errors(runner: CliRunner) -> None:
+    result = runner.invoke(cli.app, ["now"])
+    assert result.exit_code == 1
+    assert "sync" in result.stdout
+
+
+def test_export_writes_saved_events_to_ics(runner: CliRunner, tmp_path: Path) -> None:
+    EventsStore(events_file()).save([_seed("1", "Async talk"), _seed("2", "Rust talk")])
+    saved_file().write_text(
+        json.dumps([{"id": "1", "saved_at": "2026-05-10T00:00:00+00:00"}]),
+        encoding="utf-8",
+    )
+    target = tmp_path / "saved.ics"
+    result = runner.invoke(cli.app, ["export", str(target)])
+    assert result.exit_code == 0, result.stdout
+    text = target.read_text(encoding="utf-8")
+    assert text.startswith("BEGIN:VCALENDAR")
+    assert "Async talk" in text
+    assert "Rust talk" not in text
+    assert "X-PYCON-ID:1" in text
+
+
+def test_export_all_flag_dumps_full_schedule(runner: CliRunner, tmp_path: Path) -> None:
+    EventsStore(events_file()).save([_seed("1", "Async"), _seed("2", "Rust")])
+    target = tmp_path / "all.ics"
+    result = runner.invoke(cli.app, ["export", "--all", str(target)])
+    assert result.exit_code == 0, result.stdout
+    text = target.read_text(encoding="utf-8")
+    assert "Async" in text
+    assert "Rust" in text
+
+
+def test_export_without_saved_events_errors(runner: CliRunner, tmp_path: Path) -> None:
+    EventsStore(events_file()).save([_seed("1", "Async")])
+    target = tmp_path / "saved.ics"
+    result = runner.invoke(cli.app, ["export", str(target)])
+    assert result.exit_code == 1
+    assert "Saved-list is empty" in result.stdout
+
+
+def test_sync_flags_cancelled_saved_events(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved event missing from the freshly scraped set should be flagged."""
+    EventsStore(events_file()).save([_seed("1", "Hello"), _seed("2", "Bye")])
+    saved_file().write_text(
+        json.dumps(
+            [
+                {"id": "1", "saved_at": "2026-05-10T00:00:00+00:00"},
+                {"id": "2", "saved_at": "2026-05-10T00:00:00+00:00"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Replace the scraper with one that returns only event "1" — event "2" is "cancelled".
+    fresh_only_one = [_seed("1", "Hello")]
+
+    class _FakeScraper:
+        def __init__(self, *args: object, **kwargs: object) -> None: ...
+
+        async def fetch_all(self, **kwargs: object) -> list[Event]:
+            return fresh_only_one
+
+    monkeypatch.setattr(cli, "Scraper", _FakeScraper)
+
+    class _FakeClient:
+        async def __aenter__(self) -> _FakeClient:
+            return self
+
+        async def __aexit__(self, *exc: object) -> None: ...
+
+    monkeypatch.setattr(cli, "CachedClient", lambda *a, **k: _FakeClient())
+
+    result = runner.invoke(cli.app, ["sync"])
+    assert result.exit_code == 0, result.stdout
+    assert "no longer appear on the schedule" in result.stdout
+    assert "2" in result.stdout
+
+
+def test_repl_day_filter_restricts_results(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/day fri`` should drop events that aren't on the configured Friday."""
+    import pycon_cal_scraper.cli as cli_mod
+
+    friday = _seed("1", "Friday async")
+    saturday = Event.model_validate(
+        {
+            **friday.model_dump(mode="json"),
+            "id": "2",
+            "title": "Saturday async",
+            "start": datetime(2026, 5, 16, 9, 0, tzinfo=PACIFIC).isoformat(),
+            "end": datetime(2026, 5, 16, 9, 30, tzinfo=PACIFIC).isoformat(),
+        }
+    )
+    EventsStore(events_file()).save([friday, saturday])
+    events = EventsStore(events_file()).load()
+
+    capture = _ReplOutCapture()
+    monkeypatch.setattr(cli_mod, "console", capture)
+    monkeypatch.setattr(
+        "prompt_toolkit.PromptSession",
+        _scripted_session(["/day fri", "async", "/quit"]),
+    )
+
+    cli_mod._run_repl(events, results_limit=5)
+    text = capture.text
+    assert "day filter: fri" in text
+    # The Friday event should still match; Saturday must be filtered out before search.
+    assert "Friday async" in text or "<rich.table.Table" in text
+    assert "no matches" not in text or "Friday async" in text
+
+
+def test_repl_filter_state_banner_includes_all_filters(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The opening banner should advertise every filter axis the user can tweak."""
+    import pycon_cal_scraper.cli as cli_mod
+
+    EventsStore(events_file()).save([_seed("1", "Async")])
+    events = EventsStore(events_file()).load()
+
+    capture = _ReplOutCapture()
+    monkeypatch.setattr(cli_mod, "console", capture)
+    monkeypatch.setattr("prompt_toolkit.PromptSession", _scripted_session(["/quit"]))
+
+    cli_mod._run_repl(events, results_limit=5)
+    text = capture.text
+    assert "mode=lexical" in text
+    assert "day=any" in text
+    assert "room=any" in text

@@ -32,6 +32,7 @@ pycon-cal-scraper search
 #  pycon> async
 #  pycon> /save 15
 #  pycon> /saved
+#  pycon> /conflicts          # list overlap clusters in your saved list
 #  pycon> /limit 50
 #  pycon> /room "Grand Ballroom"
 #  pycon> /keyword            # switch search mode
@@ -99,6 +100,9 @@ Every search/saved table renders a `⚠` column flagging events whose time
 overlaps with one already on your saved list — quick visual conflict check
 before saving more.
 
+Inside the REPL, `/conflicts` filters down to just the saved events that
+collide, grouping them into clusters so you can decide which one to drop.
+
 ## Semantic search
 
 Anthropic doesn't ship a first-party embedding endpoint; their docs recommend
@@ -159,6 +163,7 @@ Every default in source can be overridden:
 | `search_weight_speaker` | `2` | Lexical/keyword weight for speaker hits. |
 | `search_weight_abstract` | `1` | Lexical/keyword weight for abstract hits. |
 | `semantic_negative_threshold` | `0.5` | Cosine similarity at/above which `!"phrase"` excludes an event. |
+| `venue_address` | `Long Beach Convention Center, 300 East Ocean Boulevard, Long Beach, CA 90802` | Appended to each event's room when writing to Google Calendar so tap-to-navigate opens Maps at the right building. |
 
 ## Google Calendar sync
 

@@ -9,12 +9,15 @@ import pytest
 
 from pycon_cal_scraper.filters import (
     event_overlaps_any,
+    events_happening_at,
     events_overlap,
     filter_events_by_day,
     filter_events_by_room,
     filter_events_by_window,
+    find_conflict_groups,
     parse_day_token,
     parse_when,
+    upcoming_events,
 )
 from pycon_cal_scraper.models import Event, EventType
 
@@ -143,3 +146,78 @@ def test_filter_events_by_room_empty_needle_returns_all() -> None:
 def test_filter_events_by_room_skips_events_without_room() -> None:
     events = [_event_with_room("1", None)]
     assert filter_events_by_room(events, "anything") == []
+
+
+def test_events_happening_at_includes_active_event() -> None:
+    """An event is "happening" between [start, end)."""
+    morning = _event("a", 9, 10)
+    later = _event("b", 11, 12)
+    at = datetime(2026, 5, 15, 9, 30, tzinfo=PACIFIC)
+    assert [e.id for e in events_happening_at([morning, later], at)] == ["a"]
+
+
+def test_events_happening_at_excludes_end_boundary() -> None:
+    """The end of the interval is exclusive — events that just finished don't count."""
+    morning = _event("a", 9, 10)
+    at = datetime(2026, 5, 15, 10, 0, tzinfo=PACIFIC)
+    assert events_happening_at([morning], at) == []
+
+
+def test_upcoming_events_returns_sorted_future_slice() -> None:
+    a = _event("a", 9, 10)
+    b = _event("b", 11, 12)
+    c = _event("c", 14, 15)
+    at = datetime(2026, 5, 15, 10, 30, tzinfo=PACIFIC)
+    assert [e.id for e in upcoming_events([c, a, b], at)] == ["b", "c"]
+
+
+def test_upcoming_events_respects_limit() -> None:
+    events = [_event(str(i), 9 + i, 10 + i) for i in range(5)]
+    at = datetime(2026, 5, 15, 8, 0, tzinfo=PACIFIC)
+    assert len(upcoming_events(events, at, limit=2)) == 2
+    assert upcoming_events(events, at, limit=0) == []
+
+
+def test_find_conflict_groups_empty_and_singleton() -> None:
+    assert find_conflict_groups([]) == []
+    assert find_conflict_groups([_event("a", 9, 10)]) == []
+
+
+def test_find_conflict_groups_no_overlap_returns_empty() -> None:
+    events = [_event("a", 9, 10), _event("b", 10, 11), _event("c", 11, 12)]
+    # Touching boundaries are not overlaps.
+    assert find_conflict_groups(events) == []
+
+
+def test_find_conflict_groups_clusters_transitively() -> None:
+    """A 9-10, B 9:30-10:30, C 10:15-11 — A∩B and B∩C cluster all three."""
+    a = _event("a", 9, 10)
+    b = Event.model_validate(
+        {
+            **a.model_dump(mode="json"),
+            "id": "b",
+            "title": "b",
+            "start": datetime(2026, 5, 15, 9, 30, tzinfo=PACIFIC).isoformat(),
+            "end": datetime(2026, 5, 15, 10, 30, tzinfo=PACIFIC).isoformat(),
+        }
+    )
+    c = Event.model_validate(
+        {
+            **a.model_dump(mode="json"),
+            "id": "c",
+            "title": "c",
+            "start": datetime(2026, 5, 15, 10, 15, tzinfo=PACIFIC).isoformat(),
+            "end": datetime(2026, 5, 15, 11, 0, tzinfo=PACIFIC).isoformat(),
+        }
+    )
+    groups = find_conflict_groups([c, a, b])  # unsorted input
+    assert len(groups) == 1
+    assert [e.id for e in groups[0]] == ["a", "b", "c"]
+
+
+def test_find_conflict_groups_separates_disjoint_clusters() -> None:
+    """Two pairs of overlap on different days should produce two clusters."""
+    morning = [_event("a", 9, 10), _event("b", 9, 11)]
+    afternoon = [_event("c", 14, 15), _event("d", 14, 16)]
+    groups = find_conflict_groups([*morning, *afternoon])
+    assert [sorted(e.id for e in g) for g in groups] == [["a", "b"], ["c", "d"]]

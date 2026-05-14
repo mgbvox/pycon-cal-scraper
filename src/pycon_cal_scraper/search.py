@@ -111,17 +111,29 @@ def parse_query(text: str) -> ParsedQuery:
     )
 
 
-def _event_token_set(event: Event) -> set[str]:
-    """Return every lowercased word from title/speakers/abstract as a set."""
-    text = " ".join(
+def _event_corpus(event: Event) -> str:
+    """Return one space-joined string of every searchable field on ``event``.
+
+    The fields are: title, speakers, abstract, description, track, and
+    audience level. Track and audience_level are included so searches like
+    ``"security"`` or ``"beginner"`` surface the right talks even when the
+    title doesn't repeat that label.
+    """
+    return " ".join(
         [
             event.title,
             " ".join(event.speakers),
             event.abstract or "",
             event.description or "",
+            event.track or "",
+            event.audience_level or "",
         ]
     )
-    return set(_tokenize(text))
+
+
+def _event_token_set(event: Event) -> set[str]:
+    """Return every lowercased word from the searchable corpus as a set."""
+    return set(_tokenize(_event_corpus(event)))
 
 
 def event_contains_word(event: Event, word: str) -> bool:
@@ -131,15 +143,7 @@ def event_contains_word(event: Event, word: str) -> bool:
 
 def event_contains_substring(event: Event, needle: str) -> bool:
     """Return ``True`` iff ``needle`` appears anywhere in the searched text fields."""
-    text = " ".join(
-        [
-            event.title,
-            " ".join(event.speakers),
-            event.abstract or "",
-            event.description or "",
-        ]
-    ).lower()
-    return needle.lower() in text
+    return needle.lower() in _event_corpus(event).lower()
 
 
 def apply_lexical_negatives(events: Iterable[Event], negatives: Sequence[str]) -> list[Event]:
@@ -247,7 +251,21 @@ def _score(event: Event, tokens: Sequence[str], weights: SearchWeights) -> float
         return 1.0
     title_words = _tokenize(event.title)
     speaker_words = _tokenize(" ".join(event.speakers))
-    abstract_words = _tokenize(event.abstract or event.description or "")
+    # Track and audience_level live in the abstract bucket: they're short
+    # metadata strings, but pulling them in here lets a query like
+    # "security" or "beginner" rank the right talks.
+    abstract_words = _tokenize(
+        " ".join(
+            filter(
+                None,
+                [
+                    event.abstract or event.description or "",
+                    event.track or "",
+                    event.audience_level or "",
+                ],
+            )
+        )
+    )
 
     total = 0.0
     for tok in tokens:
@@ -295,7 +313,19 @@ def keyword_search(
     for idx, event in enumerate(events):
         title_words = _tokenize(event.title)
         speaker_words = _tokenize(" ".join(event.speakers))
-        abstract_words = _tokenize(event.abstract or event.description or "")
+        # See :func:`_score` — track/audience_level are searchable too.
+        abstract_words = _tokenize(
+            " ".join(
+                filter(
+                    None,
+                    [
+                        event.abstract or event.description or "",
+                        event.track or "",
+                        event.audience_level or "",
+                    ],
+                )
+            )
+        )
         score = 0
         matched: set[str] = set()
         for tok in tokens:

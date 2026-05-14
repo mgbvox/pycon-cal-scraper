@@ -6,21 +6,18 @@ from collections.abc import Iterable
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from pycon_cal_scraper.conference import CONFERENCE_DAYS, CONFERENCE_TZ
 from pycon_cal_scraper.models import Event
 
-#: Three-letter weekday codes accepted by :func:`parse_day_token`. PyCon US 2026
-#: runs Tuesday May 13 (tutorials) through Tuesday May 19 (sprints).
-_DAY_CODES: dict[str, date] = {
-    "wed": date(2026, 5, 13),
-    "thu": date(2026, 5, 14),
-    "fri": date(2026, 5, 15),
-    "sat": date(2026, 5, 16),
-    "sun": date(2026, 5, 17),
-    "mon": date(2026, 5, 18),
-    "tue": date(2026, 5, 19),
-}
+#: Three-letter weekday codes accepted by :func:`parse_day_token`. The map
+#: itself lives in :mod:`pycon_cal_scraper.conference` so the year-rollover
+#: edit is centralized.
+_DAY_CODES: dict[str, date] = CONFERENCE_DAYS
 
-DEFAULT_TZ = ZoneInfo("America/Los_Angeles")
+#: Default IANA timezone used when a date/datetime input has no tz set. Lives
+#: under :data:`pycon_cal_scraper.conference.CONFERENCE_TZ` so the year
+#: rollover changes only one file.
+DEFAULT_TZ = CONFERENCE_TZ
 
 
 def parse_day_token(token: str) -> date:
@@ -153,3 +150,70 @@ def conflict_window(
         min(e.start for e in saved_list) - padding,
         max(e.end for e in saved_list) + padding,
     )
+
+
+def events_happening_at(events: Iterable[Event], at: datetime) -> list[Event]:
+    """Return events whose interval covers ``at``.
+
+    Ties are not broken — every event with ``start <= at < end`` is returned
+    in input order. Callers wanting a single "what should I be in" usually
+    pair this with :func:`upcoming_events` to handle the empty case.
+    """
+    return [e for e in events if e.start <= at < e.end]
+
+
+def upcoming_events(events: Iterable[Event], at: datetime, *, limit: int = 5) -> list[Event]:
+    """Return up to ``limit`` events starting strictly after ``at``.
+
+    Sorted by start time ascending. ``limit=0`` returns an empty list.
+    """
+    if limit <= 0:
+        return []
+    future = sorted((e for e in events if e.start > at), key=lambda e: e.start)
+    return future[:limit]
+
+
+def find_conflict_groups(events: Iterable[Event]) -> list[list[Event]]:
+    """Group events into connected components of pairwise time-overlap.
+
+    Two events that share any time end up in the same cluster; clusters
+    grow transitively, so three events ``A`` 9-10, ``B`` 9:30-10:30,
+    ``C`` 10:15-11 all land in one group even though ``A`` and ``C`` don't
+    touch directly. Singletons (events with no overlap) are omitted —
+    callers want only actual conflicts.
+
+    Args:
+        events: Candidate events.
+
+    Returns:
+        A list of clusters, each cluster sorted by start time, and the
+        clusters themselves sorted by the earliest start within each.
+    """
+    items = sorted(events, key=lambda ev: ev.start)
+    n = len(items)
+    if n < 2:
+        return []
+    parent = list(range(n))
+
+    def find(idx: int) -> int:
+        while parent[idx] != idx:
+            parent[idx] = parent[parent[idx]]
+            idx = parent[idx]
+        return idx
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            # Sorted by start, so once j's start passes i's end we can stop.
+            if items[j].start >= items[i].end:
+                break
+            if events_overlap(items[i], items[j]):
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[ri] = rj
+
+    groups: dict[int, list[Event]] = {}
+    for idx, ev in enumerate(items):
+        groups.setdefault(find(idx), []).append(ev)
+    result = [g for g in groups.values() if len(g) >= 2]
+    result.sort(key=lambda g: g[0].start)
+    return result

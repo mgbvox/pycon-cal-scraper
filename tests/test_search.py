@@ -18,7 +18,12 @@ PACIFIC = ZoneInfo("America/Los_Angeles")
 
 
 def _event(
-    eid: str, title: str, speakers: list[str] | None = None, abstract: str | None = None
+    eid: str,
+    title: str,
+    speakers: list[str] | None = None,
+    abstract: str | None = None,
+    track: str | None = None,
+    audience_level: str | None = None,
 ) -> Event:
     return Event.model_validate(
         {
@@ -30,8 +35,32 @@ def _event(
             "start": datetime(2026, 5, 15, 9, 0, tzinfo=PACIFIC),
             "end": datetime(2026, 5, 15, 9, 30, tzinfo=PACIFIC),
             "abstract": abstract,
+            "track": track,
+            "audience_level": audience_level,
         }
     )
+
+
+def test_search_includes_track_field() -> None:
+    """A search for a track label should surface talks tagged with that track."""
+    sec = _event("1", "Mystery topic", track="Security")
+    other = _event("2", "Different topic", track="AI")
+    assert [e.id for e in search([sec, other], "security")] == ["1"]
+
+
+def test_search_includes_audience_level() -> None:
+    """Audience-level keywords (e.g. "beginner") should match too."""
+    beginner = _event("1", "Talk one", audience_level="Beginner")
+    advanced = _event("2", "Talk two", audience_level="Advanced")
+    assert [e.id for e in search([beginner, advanced], "beginner")] == ["1"]
+
+
+def test_keyword_search_includes_track_field() -> None:
+    """Keyword (exact-token) mode should also count track hits."""
+    sec = _event("1", "Mystery topic", track="Security")
+    other = _event("2", "Different topic", track="AI")
+    results = keyword_search([sec, other], "security")
+    assert [e.id for e, _, _ in results] == ["1"]
 
 
 def test_empty_query_returns_all_events() -> None:

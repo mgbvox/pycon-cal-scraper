@@ -1,4 +1,4 @@
-"""Parse the PyCon US 2026 schedule pages into Event objects.
+"""Parse the PyCon US schedule pages into Event objects.
 
 Scraping strategy:
 - Each schedule "list page" (talks/tutorials/sponsor-presentations) contains one
@@ -7,7 +7,7 @@ Scraping strategy:
   DOM order; columns 2..N hold ``<div class="calendar-room">`` header cells. Slots
   ``<section class="slot slot-*">`` carry ``style="grid-row-start: N; grid-row-end: M;"``,
   which we resolve back to start/end ``datetime`` via the DOM order of the time elements.
-- For events that link to ``/2026/schedule/presentation/<id>/`` we follow up with a
+- For events that link to ``/<year>/schedule/presentation/<id>/`` we follow up with a
   detail fetch to populate speakers, audience level, and description.
 """
 
@@ -20,10 +20,15 @@ from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime, time
 from typing import Protocol
 from urllib.parse import urljoin
-from zoneinfo import ZoneInfo
 
 from bs4 import BeautifulSoup, Tag
 
+from pycon_cal_scraper.conference import (
+    CONFERENCE_BASE_URL,
+    CONFERENCE_TZ,
+    PRESENTATION_PATH_TEMPLATE,
+    SCHEDULE_PATHS,
+)
 from pycon_cal_scraper.models import Event, EventType
 
 #: Callback for progress reporting. ``(stage, completed, total)`` is fired
@@ -31,14 +36,8 @@ from pycon_cal_scraper.models import Event, EventType
 #: (so callers can size their progress bar) and once after each item finishes.
 ProgressCallback = Callable[[str, int, int], None]
 
-BASE_URL = "https://us.pycon.org"
-PACIFIC = ZoneInfo("America/Los_Angeles")
-
-SCHEDULE_PATHS: tuple[str, ...] = (
-    "/2026/schedule/talks/",
-    "/2026/schedule/tutorials/",
-    "/2026/schedule/sponsor-presentations/",
-)
+BASE_URL = CONFERENCE_BASE_URL
+PACIFIC = CONFERENCE_TZ
 
 SCHEDULE_PAGES: tuple[str, ...] = tuple(BASE_URL + path for path in SCHEDULE_PATHS)
 
@@ -272,7 +271,9 @@ def parse_list_page(html: str, *, page_url: str) -> list[dict[str, object]]:
                 m = _PRESENTATION_HREF_RE.search(href)
                 if m:
                     event_id = m.group(1)
-                    event_url = urljoin(BASE_URL, f"/2026/schedule/presentation/{event_id}/")
+                    event_url = urljoin(
+                        BASE_URL, PRESENTATION_PATH_TEMPLATE.format(event_id=event_id)
+                    )
                 else:
                     event_id = f"{kind.value}:{_slug(title)}"
                     event_url = urljoin(BASE_URL, href)
@@ -300,7 +301,7 @@ def parse_presentation_detail(html: str) -> dict[str, str | list[str] | None]:
     """Extract speakers, audience level, and description from a detail page.
 
     Args:
-        html: HTML body of a ``/2026/schedule/presentation/<id>/`` page.
+        html: HTML body of a ``/<year>/schedule/presentation/<id>/`` page.
 
     Returns:
         A dict with keys ``title``, ``speakers`` (list), ``audience_level``,
