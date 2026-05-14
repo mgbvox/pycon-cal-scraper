@@ -1,0 +1,41 @@
+.idea/
+.vscode/
+.DS_Store
+
+# Local secrets and credentials — NEVER commit these.
+creds/
+*.env
+.env
+.env.*
+client_secret*.json
+credentials*.json
+token*.json
+*.pem
+*.key
+
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+venv/
+
+# Test / coverage artifacts
+.coverage
+.coverage.*
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+coverage.xml
+
+# uv
+.uv/
+
+# Type-checker caches
+.ty_cache/

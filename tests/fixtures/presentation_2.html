@@ -1,0 +1,1227 @@
+
+
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <title>
+            Build your first MCP server in Python
+            
+            
+            - PyCon US 2026
+            
+        </title>
+
+        <script defer data-domain="us.pycon.org" src="https://analytics.python.org/js/script.js"></script>
+
+        <!-- meta -->
+        <meta name="description" content="" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1" />
+
+        <!-- opengraph metas -->
+        <meta property="og:title" content="Build your first MCP server in Python" />
+        <meta property="og:description" content="
+Model Context Protocol (MCP) is an open standard for providing context to generative AI applications. In this tutorial, you’ll build … Presented by: Pamela Fox 
+" />
+        <meta property="og:image" content="https://us.pycon.org/2026/static/images/theme/pycon-banner.830104bb944e.jpg" />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="675" />
+        <meta property="og:type" content="website" />
+        <meta property="og:site_name" content="PyCon US 2026" />
+        
+
+        <!-- Twitter Card meta -->
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:site" content="@pycon" />
+        <meta name="twitter:title" content="Build your first MCP server in Python" />
+        <meta name="twitter:description" content="
+Model Context Protocol (MCP) is an open standard for providing context to generative AI applications. In this tutorial, you’ll build … Presented by: Pamela Fox 
+" />
+        <meta name="twitter:image" content="https://us.pycon.org/2026/static/images/theme/pycon-banner.830104bb944e.jpg" />
+
+        <!-- css -->
+        
+        <link rel="stylesheet" type="text/css" href="/2026/static/css/main.4ed0ce148402.css">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" integrity="sha512-Evv84Mr4kqVGRNSgIGL/F/aIDqQb7xQ2vcrdIwxfjThSH8CSR7PBEakCr51Ck+w+/U6swU2Im1vVX0SVk9ABhg==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+        <!-- favicons -->
+        <!-- Three needed files for favicon +1 for PWA: -->
+        <!-- https://evilmartians.com/chronicles/how-to-favicon-in-2021-six-files-that-fit-most-needs -->
+        <link rel="icon" href="/2026/static/images/favicon/favicon.e49b6e6a5203.ico">
+        <link rel="icon" href="/2026/static/images/favicon/favicon.1ee063c11cb1.svg" type="image/svg+xml">
+        <link rel="apple-touch-icon" href="/2026/static/images/favicon/apple-touch-icon.f650e750d132.png">
+        <link rel="manifest" href="/2026/static/images/favicon/site.a742b1aa2501.webmanifest" crossorigin="use-credentials" />
+
+        
+        
+        
+    </head>
+
+    <body class="">
+        <!-- Accessible Jump Navigation -->
+        <nav class="skip-nav">
+            <ul>
+                <li><a href="#Content">Skip to content</a></li>
+                <li><a href="#SiteNav">Skip to navigation</a></li>
+                <li><a href="#SiteFooter">Skip to footer</a></li>
+            </ul>
+        </nav>
+        <header class="site-header">
+            
+
+            <div class="site-nav" aria-label="Main Navigation" id="SiteNav">
+                <div class="container">
+                    <div class="site-nav-wrapper">
+                        <div class="site-nav-controls">
+                            <a href="/" class="site-nav-logo hover-rotate-left"><img
+                                src="/2026/static/images/theme/sub-logo-full.94351d59d82e.svg"
+                                height="30"
+                                alt="PyCon US 2026" class="logo-light"/><img 
+                                        src="/2026/static/images/theme/sub-logo-full-dark.bdcc46a28282.svg"
+                                        height="30"
+                                        alt="PyCon US 2026" class="logo-dark" /></a>
+
+                            <a href="/2026/search/" aria-label="Open search" data-dialog-target="SearchDialog">
+                                <i class="fa-solid fa-magnifying-glass"></i>
+                            </a>
+                            <button 
+                                aria-expanded="false"
+                                aria-label="Toggle navigation"
+                                aria-controls="SiteNavLists">
+                                <i class="fa-solid fa-bars"></i>
+                            </button>
+                        </div>
+                        <nav id="SiteNavLists" class="site-nav-lists" aria-expanded="false" hidden>
+                            <ul class="site-nav-list site-nav-primary">
+                                <li>
+                                    <a 
+                                        href="/" 
+                                        class="site-nav-logo hover-rotate-left"><img 
+                                        src="/2026/static/images/theme/sub-logo-full.94351d59d82e.svg"
+                                        height="30"
+                                        alt="PyCon US 2026"
+                                        class="logo-light"/><img 
+                                        src="/2026/static/images/theme/sub-logo-full-dark.bdcc46a28282.svg"
+                                        height="30"
+                                        alt="PyCon US 2026"
+                                        class="logo-dark" />
+                                    </a>
+                                </li>
+                                
+                                
+
+<li class="has-children">
+  <a 
+    href="/2026/about/" 
+    
+
+    
+      aria-haspopup="true"
+      aria-controls="SiteNavSubmenu-1"
+      aria-expanded="false"
+    
+
+    class=""
+    >
+    About
+  </a>
+  
+    <ul 
+      id="SiteNavSubmenu-1"
+      aria-hidden="true" 
+      class="site-nav-submenu">
+      
+
+<li >
+  <a 
+    href="/2026/about/pycon/" 
+    
+
+    
+
+    class=""
+    >
+    What is PyCon US?
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/about/health-safety-guidelines/" 
+    
+
+    
+
+    class=""
+    >
+    Health &amp; Safety Guidelines
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/about/psf/" 
+    
+
+    
+
+    class=""
+    >
+    Python Software Foundation
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="https://policies.python.org/us.pycon.org/code-of-conduct/" 
+    
+
+    
+
+    class=""
+    >
+    Code of Conduct
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/about/diversity/" 
+    
+
+    
+
+    class=""
+    >
+    Diversity
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/about/support/" 
+    
+
+    
+
+    class=""
+    >
+    Support
+  </a>
+  
+</li>
+
+
+    </ul>
+  
+</li>
+
+<li class="has-children">
+  <a 
+    href="/2026/sponsorship/" 
+    
+
+    
+      aria-haspopup="true"
+      aria-controls="SiteNavSubmenu-8"
+      aria-expanded="false"
+    
+
+    class=""
+    >
+    Sponsor
+  </a>
+  
+    <ul 
+      id="SiteNavSubmenu-8"
+      aria-hidden="true" 
+      class="site-nav-submenu">
+      
+
+<li >
+  <a 
+    href="/2026/sponsorship/why-sponsor/" 
+    
+
+    
+
+    class=""
+    >
+    Why Sponsor?
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/sponsorship/sponsors/" 
+    
+
+    
+
+    class=""
+    >
+    Sponsors
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="https://s3.dualstack.us-east-2.amazonaws.com/pythondotorg-assets/media/files/psf_sponsor_prospectus_feb26-compressed.pdf" 
+    
+
+    
+
+    class=""
+    >
+    Sponsorship Prospectus
+  </a>
+  
+</li>
+
+
+    </ul>
+  
+</li>
+
+<li class="has-children">
+  <a 
+    href="/2026/speaking/" 
+    
+
+    
+      aria-haspopup="true"
+      aria-controls="SiteNavSubmenu-11"
+      aria-expanded="false"
+    
+
+    class=""
+    >
+    Speaking
+  </a>
+  
+    <ul 
+      id="SiteNavSubmenu-11"
+      aria-hidden="true" 
+      class="site-nav-submenu">
+      
+
+<li >
+  <a 
+    href="/2026/speaking/guidelines/" 
+    
+
+    
+
+    class=""
+    >
+    Proposal Guidelines
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/speaking/talks/" 
+    
+
+    
+
+    class=""
+    >
+    Proposing a Talk
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/speaking/tutorials/" 
+    
+
+    
+
+    class=""
+    >
+    Proposing a Tutorial
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/speaking/charlas/" 
+    
+
+    
+
+    class=""
+    >
+    Proposing a Charlas
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/speaking/posters/" 
+    
+
+    
+
+    class=""
+    >
+    Proposing a Poster
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/speaking/mentorship/" 
+    
+
+    
+
+    class=""
+    >
+    Proposal Mentorship
+  </a>
+  
+</li>
+
+
+    </ul>
+  
+</li>
+
+<li class="has-children">
+  <a 
+    href="/2026/attend/" 
+    
+
+    
+      aria-haspopup="true"
+      aria-controls="SiteNavSubmenu-21"
+      aria-expanded="false"
+    
+
+    class=""
+    >
+    Attend
+  </a>
+  
+    <ul 
+      id="SiteNavSubmenu-21"
+      aria-hidden="true" 
+      class="site-nav-submenu">
+      
+
+<li >
+  <a 
+    href="/2026/attend/information/" 
+    
+
+    
+
+    class=""
+    >
+    Registration Information
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/attend/onsite-information/" 
+    
+
+    
+
+    class=""
+    >
+    Onsite Information
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/attend/travel-grants/" 
+    
+
+    
+
+    class=""
+    >
+    Travel Grants
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/attend/faq/" 
+    
+
+    
+
+    class=""
+    >
+    Travel Grants FAQ
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/attend/international-travel/" 
+    
+
+    
+
+    class=""
+    >
+    International Travel
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/attend/startup-row/" 
+    
+
+    
+
+    class=""
+    >
+    Startup Row
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/attend/community-booths/" 
+    
+
+    
+
+    class=""
+    >
+    Community Booths
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/attend/expo-hall/" 
+    
+
+    
+
+    class=""
+    >
+    Expo Hall
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/attend/convince-your-boss/" 
+    
+
+    
+
+    class=""
+    >
+    How to Convince Your Boss
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="https://us.pycon.org/2026/documents/5/How_to_Convince_Your_Boss_Template.pdf" 
+    
+
+    
+
+    class=""
+    >
+    How to Convince Your Boss Template
+  </a>
+  
+</li>
+
+
+    </ul>
+  
+</li>
+
+<li class="has-children">
+  <a 
+    href="/2026/venue/" 
+    
+
+    
+      aria-haspopup="true"
+      aria-controls="SiteNavSubmenu-25"
+      aria-expanded="false"
+    
+
+    class=""
+    >
+    Venue
+  </a>
+  
+    <ul 
+      id="SiteNavSubmenu-25"
+      aria-hidden="true" 
+      class="site-nav-submenu">
+      
+
+<li >
+  <a 
+    href="/2026/venue/hotels/" 
+    
+
+    
+
+    class=""
+    >
+    Hotels
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/venue/transit/" 
+    
+
+    
+
+    class=""
+    >
+    Public Transit in Long Beach
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/venue/travel/" 
+    
+
+    
+
+    class=""
+    >
+    Traveling to Long Beach
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/venue/maps" 
+    
+
+    
+
+    class=""
+    >
+    Maps
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/attend/onsite-information/" 
+    
+
+    
+
+    class=""
+    >
+    Onsite Information
+  </a>
+  
+</li>
+
+
+    </ul>
+  
+</li>
+
+<li class="has-children">
+  <a 
+    href="/2026/events/" 
+    
+
+    
+      aria-haspopup="true"
+      aria-controls="SiteNavSubmenu-33"
+      aria-expanded="false"
+    
+
+    class=""
+    >
+    Events &amp; Summits
+  </a>
+  
+    <ul 
+      id="SiteNavSubmenu-33"
+      aria-hidden="true" 
+      class="site-nav-submenu">
+      
+
+<li >
+  <a 
+    href="/2026/events/newcomer-orientation/" 
+    
+
+    
+
+    class=""
+    >
+    Newcomer Orientation
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/events/opening-reception/" 
+    
+
+    
+
+    class=""
+    >
+    Opening Reception
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/events/education-summit/" 
+    
+
+    
+
+    class=""
+    >
+    Education Summit
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/events/webassembly-summit/" 
+    
+
+    
+
+    class=""
+    >
+    Web Assembly Summit
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/events/typing-summit/" 
+    
+
+    
+
+    class=""
+    >
+    Typing Summit
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/events/maintainers-summit/" 
+    
+
+    
+
+    class=""
+    >
+    Maintainers Summit
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/events/packaging-summit/" 
+    
+
+    
+
+    class=""
+    >
+    Packaging Summit
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/events/open-spaces/" 
+    
+
+    
+
+    class=""
+    >
+    Open Spaces
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/events/pyladies-auction/" 
+    
+
+    
+
+    class=""
+    >
+    PyLadies Auction
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/events/job-fair/" 
+    
+
+    
+
+    class=""
+    >
+    Job Fair &amp; Community Showcase
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/events/pyladies-lunch/" 
+    
+
+    
+
+    class=""
+    >
+    PyLadies Luncheon
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/events/lightning-talks/" 
+    
+
+    
+
+    class=""
+    >
+    Lightning Talks
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/events/dev-sprints/" 
+    
+
+    
+
+    class=""
+    >
+    Development Sprints
+  </a>
+  
+</li>
+
+
+    </ul>
+  
+</li>
+
+<li class="has-children">
+  <a 
+    href="#" 
+    
+
+    
+      aria-haspopup="true"
+      aria-controls="SiteNavSubmenu-42"
+      aria-expanded="false"
+    
+
+    class=""
+    >
+    Schedule
+  </a>
+  
+    <ul 
+      id="SiteNavSubmenu-42"
+      aria-hidden="true" 
+      class="site-nav-submenu">
+      
+
+<li >
+  <a 
+    href="/2026/schedule/tutorials" 
+    
+
+    
+
+    class=""
+    >
+    Tutorials (Wed. and Thurs.)
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/schedule/sponsor-presentations/" 
+    
+
+    
+
+    class=""
+    >
+    Sponsor Presentations (Thurs. and Fri.)
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/schedule/talks" 
+    
+
+    
+
+    class=""
+    >
+    Talks (Friday - Sunday)
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/schedule/posters/list/" 
+    
+
+    
+
+    class=""
+    >
+    Posters (Sunday)
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/about/keynote-speakers/" 
+    
+
+    
+
+    class=""
+    >
+    Keynote Speakers
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/tracks/ai" 
+    
+
+    
+
+    class=""
+    >
+    AI Track (Friday)
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/tracks/security" 
+    
+
+    
+
+    class=""
+    >
+    Security Track (Saturday)
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/events/dev-sprints/" 
+    
+
+    
+
+    class=""
+    >
+    Sprints (Mon. and Tues.)
+  </a>
+  
+</li>
+
+
+    </ul>
+  
+</li>
+
+<li class="has-children">
+  <a 
+    href="/2026/volunteer/" 
+    
+
+    
+      aria-haspopup="true"
+      aria-controls="SiteNavSubmenu-63"
+      aria-expanded="false"
+    
+
+    class=""
+    >
+    Volunteer
+  </a>
+  
+    <ul 
+      id="SiteNavSubmenu-63"
+      aria-hidden="true" 
+      class="site-nav-submenu">
+      
+
+<li >
+  <a 
+    href="/2026/volunteer/volunteering/" 
+    
+
+    
+
+    class=""
+    >
+    Volunteering
+  </a>
+  
+</li>
+
+<li >
+  <a 
+    href="/2026/volunteer/session-staff/" 
+    
+
+    
+
+    class=""
+    >
+    Session Staff
+  </a>
+  
+</li>
+
+
+    </ul>
+  
+</li>
+
+
+                            </ul>
+                            <ul class="site-nav-list site-nav-secondary">
+                                <li class="hide-for-mobile">
+                                    <button data-dialog-target="SearchDialog" aria-label="Open search" class="button link">Search</button>
+                                </li>
+                                
+                                    
+                                        <li>
+                                            <a class="button focal small" href="/2026/accounts/signup/">Sign Up</a>
+                                        </li>
+                                        <li>
+                                            <a class="button solid small" href="/2026/accounts/login/">Sign in</a>
+                                        </li>
+                                    
+                                    
+                                
+                            </ul>
+                        </nav>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        
+            <main id="Content">
+                <div class="container">
+                    
+
+
+                    
+  <div class="presentation-detail-header mb-3">
+    <hgroup class="presentation-detail-header-headline">
+      <span class="pill">Tutorials</span>
+      
+        
+      
+      <h1 class="size-display-4 text-center">
+        Build your first MCP server in Python
+      </h1>
+    </hgroup>
+
+    
+      <p class="text-center size-6">
+        Wednesday, May 13th, 2026
+        9 a.m.&ndash;12:30 p.m. in
+        <a href="/2026/schedule/rooms/room-101a/">Room 101A</a>
+      </p>
+      
+        <div class="actions center" style="margin-top: .5rem;">
+          <a class="button small" href="/2026/schedule/presentation/2/ical/"><i class="fa-regular fa-calendar-plus"></i> Add to Calendar</a>
+        </div>
+      
+    
+
+    <div class="presentation-detail-meta">
+      <h2 class="presentation-detail-meta-headline">Presented by</h2>
+      <p class="speaker-list">
+        
+          <a href="/2026/speaker/profile/2/">Pamela Fox</a>
+        
+      </p>
+    </div>
+
+    
+      <div class="presentation-detail-meta">
+        <h2 class="presentation-detail-meta-headline">Experience Level:</h2>
+        <p>Some experience</p>
+      </div>
+    
+  </div>
+
+  <div class="max-medium">
+    <h2 class="size-display-6">Description</h2>
+
+    <div class="content">
+      <p>Model Context Protocol (MCP) is an open standard for providing context to generative AI applications. In this tutorial, you’ll build your first MCP server in Python using open‑source SDKs and development tools.</p>
+<p>We’ll begin with a brief overview of MCP concepts and how servers and clients communicate. From there, you’ll implement a local MCP server in Python, define tools, and interact with them using AI agents.</p>
+<p>Once the basics are in place, we’ll add essential real‑world features, including authentication. You’ll learn how to secure an MCP server using open‑source, OAuth‑compatible authentication providers and understand how authentication fits into the MCP request flow.</p>
+<p>This tutorial is hands‑on: participants will write and run Python code throughout the session and leave with a working MCP server they can extend after the conference.</p>
+    </div>
+
+    
+  </div>
+
+
+                </div>
+            </main>
+        
+
+        <footer class="site-footer" id="SiteFooter">
+            <div class="container">
+                <div class="site-footer-colophon content">
+                    
+                    <p class="lead"><b>The PyCon US 2026 conference in Long Beach, California, USA is a production of the <a href="https://www.python.org/psf/">Python Software Foundation</a>.</b></p>
+                    <p>This site is built using <a href="https://www.djangoproject.com/">Django</a> and <a href="https://wagtail.org/">Wagtail</a>.
+                    <p>PyCon US 2026 illustration and design by <a href="https://meanapasc.myportfolio.com/">Meanapas.C</a> and <a href="https://tiles.bio/humblejack">Hamza Haj Taieb</a>, Coordinated by <a href="https://www.galileosparadox.com/">Georgi K</a></p>
+                    <p>Site design implemented by <a href="https://yupgup.com/">YupGup</a>.</p>
+                    
+                    <p>Need help? <a href="/2026/about/support/">Check out our Support page</a> to find the correct person to contact.</p>
+                    <p><a href="https://policies.python.org/PSF-Privacy-Notice/">Privacy Notice</a></p>
+                </div>
+
+                <div class="site-footer-aux">
+                    <div>
+                        <small>&copy; Python Software Foundation</small>
+                    </div>
+                    <ul class="nav">
+                        <li>
+                            <a href="https://pycon.blogspot.com/" aria-label="Blog"><span class="brand large brand-blogger"></span></a>
+                        </li>
+                        <li>
+                            <a href="https://www.linkedin.com/company/thepsf" aria-label="LinkedIn"><span class="brand large brand-linkedin"></span></a>
+                        </li>
+                        <li>
+                            <a href="https://fosstodon.org/@pycon" aria-label="Mastodon"><span class="brand large brand-mastodon"></span></a>
+                        </li>
+                        <li>
+                            <a href="https://twitter.com/pycon?lang=en" aria-label="X (formally Twitter)"><span class="brand large brand-xtwitter"></span></a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </footer>
+
+        <dialog class="search-dialog" id="SearchDialog">
+            <div class="dialog-body">
+                <h2 class="sr-only">Search</h2>
+                
+                <form action="/2026/search/" method="GET" class="search-form">
+                    <label for="search-query" class="sr-only">Search</label>
+                    <input id="search-query" type="text" name="query" placeholder="Search" />
+                    <button type="submit" tabindex="1">Search</button>
+                </form>
+
+                <div 
+                    class="search-dialog-results"
+                    role="status"
+                    aria-live="polite"></div>
+            </div>
+
+            <button class="button xsmall" data-close aria-label="Close search dialog" tabindex="1">
+                <i class="fa-solid fa-xmark"></i>
+                ESC
+            </button>
+        </dialog>
+
+        
+        <script type="text/javascript" src="/2026/static/js/vendor/jquery-3.6.4.min.641dd1437010.js"></script>
+        <script type="module" src="/2026/static/js/main.4ab606baf869.js"></script>
+        
+        
+        
+        
+    </div>
+    </body>
+</html>
